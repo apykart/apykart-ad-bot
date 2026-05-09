@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Apykart Telegram Bot — Complete Admin Control
-Version 4.0 | Secure với Environment Variables
+Apykart Telegram Bot — Secure Production Version
+Render Deploy Ready | No Hardcoded Secrets
 """
 
 import os
+import sys
+import json
 import logging
+import traceback
 import requests
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,250 +17,201 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 # ============================================
+# DEBUG: Catch all errors (Logs mein dikhega)
+# ============================================
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    print("=" * 50)
+    print("UNHANDLED EXCEPTION:")
+    traceback.print_exception(exc_type, exc_value, exc_traceback)
+    print("=" * 50)
+
+sys.excepthook = global_exception_handler
+
+# ============================================
+# LOGGING SETUP
+# ============================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# ============================================
 # CONFIGURATION — Environment Variables Se
 # ============================================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN:
-    raise ValueError("TELEGRAM_TOKEN environment variable not set")
+    logger.error("TELEGRAM_TOKEN environment variable not set")
+    sys.exit(1)
 
-ALLOWED_USER_IDS_str = os.getenv("ALLOWED_USER_IDS", "")
-ALLOWED_USER_IDS = [int(x.strip()) for x in ALLOWED_USER_IDS_str.split(",") if x.strip()]
+ALLOWED_USER_IDS_STR = os.getenv("ALLOWED_USER_IDS", "")
+ALLOWED_USER_IDS = []
+if ALLOWED_USER_IDS_STR:
+    try:
+        ALLOWED_USER_IDS = [int(x.strip()) for x in ALLOWED_USER_IDS_STR.split(",") if x.strip()]
+    except ValueError:
+        logger.error(f"Invalid ALLOWED_USER_IDS format: {ALLOWED_USER_IDS_STR}")
+        sys.exit(1)
 
 FIREBASE_KEY_PATH = os.getenv("FIREBASE_KEY_PATH", "apykart-firebase-key.json")
 
-# Optional APIs
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
-CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+logger.info(f"Authorized users: {ALLOWED_USER_IDS}")
+logger.info(f"Firebase key path: {FIREBASE_KEY_PATH}")
 
 # ============================================
 # FIREBASE SETUP
 # ============================================
-cred = credentials.Certificate(FIREBASE_KEY_PATH)
-firebase_admin.initialize_app(cred)
-db = firestore.client()
-
-logging.basicConfig(level=logging.INFO)
+try:
+    # Check if file exists
+    if not os.path.exists(FIREBASE_KEY_PATH):
+        logger.error(f"Firebase key file not found at: {FIREBASE_KEY_PATH}")
+        # List current directory files for debugging
+        logger.info(f"Current directory files: {os.listdir('.')}")
+        sys.exit(1)
+    
+    with open(FIREBASE_KEY_PATH, 'r') as f:
+        firebase_config = json.load(f)
+        logger.info(f"Firebase config loaded: project_id={firebase_config.get('project_id')}")
+    
+    cred = credentials.Certificate(FIREBASE_KEY_PATH)
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    logger.info("Firebase initialized successfully")
+except Exception as e:
+    logger.error(f"Firebase initialization failed: {str(e)}")
+    sys.exit(1)
 
 # ============================================
 # AUTHORIZATION
 # ============================================
-
 async def is_authorized(update: Update):
     user_id = update.effective_user.id
-    if user_id not in ALLOWED_USER_IDS:
-        await update.message.reply_text("⛔ Unauthorized access. This bot is for personal use only.")
+    if not ALLOWED_USER_IDS or user_id not in ALLOWED_USER_IDS:
+        await update.message.reply_text("⛔ Unauthorized access.")
         return False
     return True
 
 # ============================================
-# DASHBOARD STATS FUNCTIONS
+# DASHBOARD STATS
 # ============================================
-
 async def get_dashboard_stats():
-    """Complete dashboard data"""
     try:
-        orders = db.collection('orders').get()
+        orders = list(db.collection('orders').stream())
         total_orders = len(orders)
         
         total_revenue = 0
         pending_orders = 0
-        delivered_orders = 0
         for order in orders:
             data = order.to_dict()
             total_revenue += data.get('total', 0)
-            status = data.get('status', '')
-            if status == 'pending':
+            if data.get('status') == 'pending':
                 pending_orders += 1
-            elif status == 'delivered':
-                delivered_orders += 1
         
-        products = db.collection('products').get()
-        total_products = len(products)
-        active_products = sum(1 for p in products if p.to_dict().get('status') == 'active')
+        products = list(db.collection('products').stream())
+        users = list(db.collection('users').stream())
+        sellers = list(db.collection('sellers').stream())
         
-        users = db.collection('users').get()
-        total_users = len(users)
-        banned_users = sum(1 for u in users if u.to_dict().get('banned'))
-        
-        sellers = db.collection('sellers').get()
-        total_sellers = len(sellers)
-        verified_sellers = sum(1 for s in sellers if s.to_dict().get('status') == 'active')
-        
-        videos = db.collection('videos').where('status', '==', 'pending').get()
-        pending_videos = len(videos)
-        
-        withdrawals = db.collection('withdrawals').where('status', '==', 'pending').get()
-        pending_withdrawals = len(withdrawals)
-        
-        today = datetime.now().date()
-        today_orders = 0
-        for order in orders:
-            created = order.to_dict().get('createdAt')
-            if created and isinstance(created, datetime) and created.date() == today:
-                today_orders += 1
-        
-        message = (
-            f"🏪 *APYKART ADMIN DASHBOARD*\n\n"
-            f"📦 *Orders:* `{total_orders}`\n"
-            f"   ├ Pending: `{pending_orders}`\n"
-            f"   ├ Delivered: `{delivered_orders}`\n"
-            f"   └ Today: `{today_orders}`\n\n"
-            f"💰 *Revenue:* `₹{total_revenue:,.0f}`\n\n"
-            f"🛍️ *Products:* `{total_products}`\n"
-            f"   ├ Active: `{active_products}`\n"
-            f"   └ Inactive: `{total_products - active_products}`\n\n"
-            f"👥 *Users:* `{total_users}`\n"
-            f"   ├ Banned: `{banned_users}`\n"
-            f"   └ Active: `{total_users - banned_users}`\n\n"
-            f"🏪 *Sellers:* `{total_sellers}`\n"
-            f"   ├ Verified: `{verified_sellers}`\n"
-            f"   └ Pending: `{total_sellers - verified_sellers}`\n\n"
-            f"📹 *Pending Videos:* `{pending_videos}`\n"
-            f"💸 *Pending Withdrawals:* `{pending_withdrawals}`"
+        return (
+            f"🏪 *APYKART DASHBOARD*\n\n"
+            f"📦 Orders: `{total_orders}`\n"
+            f"💰 Revenue: `₹{total_revenue:,.0f}`\n"
+            f"🛍️ Products: `{len(products)}`\n"
+            f"👥 Users: `{len(users)}`\n"
+            f"🏪 Sellers: `{len(sellers)}`\n"
         )
-        return message
     except Exception as e:
+        logger.error(f"Dashboard stats error: {str(e)}")
         return f"❌ Error: {str(e)}"
 
-async def get_recent_orders(limit=10):
+async def get_recent_orders(limit=5):
     try:
-        orders = db.collection('orders').order_by('createdAt', direction=firestore.Query.DESCENDING).limit(limit).get()
-        if not orders:
+        orders = db.collection('orders').order_by('createdAt', direction=firestore.Query.DESCENDING).limit(limit).stream()
+        orders_list = list(orders)
+        if not orders_list:
             return "📦 No orders found."
         
-        message = "📋 *RECENT ORDERS*\n\n"
-        for order in orders:
+        message = "📋 *Recent Orders*\n\n"
+        for order in orders_list:
             data = order.to_dict()
-            order_id = order.id[:12]
+            order_id = order.id[:8]
             customer = data.get('customerName', 'Guest')
             total = data.get('total', 0)
             status = data.get('status', 'pending')
-            payment = data.get('payment', 'COD')
-            
-            status_emoji = {'placed': '🟡', 'confirmed': '🔵', 'shipped': '🚚',
-                           'delivered': '✅', 'cancelled': '❌', 'returned': '↩️'}.get(status, '⚪')
-            
-            message += f"{status_emoji} *{order_id}*\n"
-            message += f"   👤 {customer}\n"
-            message += f"   💰 ₹{total} | 💳 {payment}\n"
-            message += f"   📌 {status}\n\n"
+            message += f"🆔 `{order_id}` | {customer} | ₹{total} | {status}\n"
         return message
     except Exception as e:
-        return f"❌ Error: {str(e)}"
-
-async def get_order_details(order_id):
-    try:
-        doc_ref = db.collection('orders').document(order_id)
-        doc = doc_ref.get()
-        if not doc.exists:
-            return f"❌ Order `{order_id}` not found."
-        
-        data = doc.to_dict()
-        items_text = ""
-        for item in data.get('items', []):
-            items_text += f"   • {item.get('name', 'Item')} x{item.get('quantity', 1)} = ₹{item.get('price', 0)}\n"
-        
-        return (
-            f"📦 *ORDER DETAILS*\n🆔 `{order_id}`\n\n"
-            f"👤 *Customer:* {data.get('customerName', 'N/A')}\n"
-            f"📞 *Phone:* {data.get('customerPhone', 'N/A')}\n"
-            f"📍 *Address:* {data.get('address', 'N/A')}\n\n"
-            f"🛍️ *Items:*\n{items_text}\n"
-            f"💰 *Total:* ₹{data.get('total', 0)}\n"
-            f"💳 *Payment:* {data.get('payment', 'COD')}\n"
-            f"📌 *Status:* {data.get('status', 'pending')}"
-        )
-    except Exception as e:
+        logger.error(f"Recent orders error: {str(e)}")
         return f"❌ Error: {str(e)}"
 
 async def update_order_status(order_id, new_status):
-    valid_statuses = ['placed', 'confirmed', 'shipped', 'delivered', 'cancelled', 'returned', 'refunded']
+    valid_statuses = ['placed', 'confirmed', 'shipped', 'delivered', 'cancelled']
     if new_status not in valid_statuses:
-        return f"❌ Invalid status. Valid: {', '.join(valid_statuses)}"
-    
+        return f"❌ Invalid. Valid: {', '.join(valid_statuses)}"
     try:
         doc_ref = db.collection('orders').document(order_id)
         if not doc_ref.get().exists:
             return f"❌ Order `{order_id}` not found."
-        
         doc_ref.update({'status': new_status, 'updatedAt': datetime.now()})
         return f"✅ Order `{order_id}` updated to *{new_status}*"
     except Exception as e:
         return f"❌ Error: {str(e)}"
 
-async def get_products(limit=20):
+async def add_product(name, price):
     try:
-        products = db.collection('products').limit(limit).get()
-        if not products:
-            return "🛍️ No products found."
-        
-        message = "🛍️ *PRODUCTS*\n\n"
-        for product in products:
-            data = product.to_dict()
-            name = data.get('name', 'Unknown')[:25]
-            price = data.get('price', 0)
-            status = data.get('status', 'inactive')
-            stock = data.get('stock', 0)
-            
-            status_icon = '✅' if status == 'active' else '❌'
-            stock_icon = '📦' if stock > 0 else '⚠️'
-            
-            message += f"{status_icon} `{product.id[:8]}` *{name}*\n"
-            message += f"   💰 ₹{price} | {stock_icon} Stock: {stock}\n\n"
-        return message
-    except Exception as e:
-        return f"❌ Error: {str(e)}"
-
-async def add_product(name, price, category="General", stock=100):
-    try:
-        product_data = {
-            'name': name, 'price': float(price), 'category': category,
-            'status': 'active', 'approvalStatus': 'approved', 'stock': stock,
-            'createdAt': datetime.now(), 'images': [], 'description': f"{name} - ₹{price}"
+        data = {
+            'name': name,
+            'price': float(price),
+            'status': 'active',
+            'approvalStatus': 'approved',
+            'stock': 100,
+            'createdAt': datetime.now()
         }
-        doc_ref = db.collection('products').add(product_data)
-        return f"✅ Product *{name}* added at ₹{price}\n🆔 `{doc_ref[1].id}`"
+        doc = db.collection('products').add(data)
+        return f"✅ Product *{name}* added at ₹{price}"
     except Exception as e:
         return f"❌ Error: {str(e)}"
 
 # ============================================
 # COMMAND HANDLERS
 # ============================================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
         return
     
     keyboard = [
-        [InlineKeyboardButton("📊 Dashboard", callback_data='stats'),
+        [InlineKeyboardButton("📊 Stats", callback_data='stats'),
          InlineKeyboardButton("📦 Orders", callback_data='orders')],
-        [InlineKeyboardButton("🛍️ Products", callback_data='products'),
-         InlineKeyboardButton("👥 Users", callback_data='users')],
-        [InlineKeyboardButton("🏪 Sellers", callback_data='sellers'),
-         InlineKeyboardButton("💰 Revenue", callback_data='revenue')],
         [InlineKeyboardButton("❓ Help", callback_data='help')]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
     await update.message.reply_text(
-        "🤖 *APYKART ADMIN BOT* 🔥\n\n"
-        "*Commands:*\n"
-        "📊 `/stats` - Dashboard\n"
-        "📦 `/orders` - Orders\n"
-        "🛍️ `/products` - Products\n"
-        "➕ `/add Name Price` - Add product\n"
-        "🔄 `/update ORDER_ID status` - Update order\n"
-        "❓ `/help` - All commands",
+        "🤖 *Apykart Admin Bot*\n\n"
+        "/stats - Dashboard\n"
+        "/orders - Recent orders\n"
+        "/update ID status - Update order\n"
+        "/add Name Price - Add product\n"
+        "/help - Commands",
         parse_mode='Markdown',
-        reply_markup=reply_markup
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    await update.message.reply_text(
+        "*Commands:*\n"
+        "/stats - Dashboard\n"
+        "/orders - Recent orders\n"
+        "/update ORDER_ID status - Update order\n"
+        "/add Name Price - Add product\n"
+        "/start - Main menu",
+        parse_mode='Markdown'
     )
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
         return
-    await update.message.reply_text("📊 Fetching dashboard...")
+    await update.message.reply_text("📊 Fetching...")
     msg = await get_dashboard_stats()
     await update.message.reply_text(msg, parse_mode='Markdown')
 
@@ -268,48 +222,26 @@ async def orders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await get_recent_orders()
     await update.message.reply_text(msg, parse_mode='Markdown')
 
-async def products_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    await update.message.reply_text("🛍️ Fetching products...")
-    msg = await get_products()
-    await update.message.reply_text(msg, parse_mode='Markdown')
-
-async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_authorized(update):
-        return
-    if len(context.args) < 2:
-        await update.message.reply_text("❌ Usage: `/add Name Price`\nExample: `/add Hoodie 1299`", parse_mode='Markdown')
-        return
-    price = context.args[-1]
-    name = ' '.join(context.args[:-1])
-    await update.message.reply_text(f"➕ Adding *{name}*...", parse_mode='Markdown')
-    msg = await add_product(name, price)
-    await update.message.reply_text(msg, parse_mode='Markdown')
-
 async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
         return
     if len(context.args) < 2:
         await update.message.reply_text("❌ Usage: `/update ORDER_ID status`", parse_mode='Markdown')
         return
-    await update.message.reply_text(f"🔄 Updating order `{context.args[0]}`...", parse_mode='Markdown')
     msg = await update_order_status(context.args[0], context.args[1])
     await update.message.reply_text(msg, parse_mode='Markdown')
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
         return
-    await update.message.reply_text(
-        "📋 *COMMANDS*\n\n"
-        "/stats - Dashboard\n"
-        "/orders - Orders\n"
-        "/products - Products\n"
-        "/add Name Price - Add product\n"
-        "/update ID status - Update order\n"
-        "/start - Main menu",
-        parse_mode='Markdown'
-    )
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Usage: `/add Name Price`", parse_mode='Markdown')
+        return
+    price = context.args[-1]
+    name = ' '.join(context.args[:-1])
+    await update.message.reply_text(f"➕ Adding *{name}*...", parse_mode='Markdown')
+    msg = await add_product(name, price)
+    await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -321,32 +253,29 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'orders':
         msg = await get_recent_orders()
         await query.edit_message_text(msg, parse_mode='Markdown')
-    elif query.data == 'products':
-        msg = await get_products()
-        await query.edit_message_text(msg, parse_mode='Markdown')
     elif query.data == 'help':
         await query.edit_message_text(
-            "📋 /stats - Dashboard\n/orders - Orders\n/products - Products\n/add Name Price - Add product\n/update ID status - Update order",
+            "/stats - Dashboard\n/orders - Orders\n/update ID status - Update order\n/add Name Price - Add product",
             parse_mode='Markdown'
         )
 
+# ============================================
+# MAIN
+# ============================================
 def main():
-    print("🤖 Apykart Admin Bot Starting...")
-    print(f"🔥 Authorized users: {ALLOWED_USER_IDS}")
-    
+    logger.info("Starting Apykart Admin Bot...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("orders", orders_command))
-    app.add_handler(CommandHandler("products", products_command))
-    app.add_handler(CommandHandler("add", add_command))
     app.add_handler(CommandHandler("update", update_command))
+    app.add_handler(CommandHandler("add", add_command))
     app.add_handler(CallbackQueryHandler(button_callback))
     
-    print("✅ Bot is running!")
+    logger.info("Bot is polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
