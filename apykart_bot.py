@@ -20,11 +20,11 @@ from firebase_admin import credentials, firestore
 
 TELEGRAM_TOKEN = "8309129292:AAGvtBFAKk2mbuMjjlrotLYiVKb9fUuaEZ0"  # BotFather se mila
 ALLOWED_USER_IDS = [8660621615]  # @userinfobot se apna ID daal
-FIREBASE_KEY_PATH = "apykart916-firebase-key.json"
+FIREBASE_KEY_PATH = "apykart-firebase-key.json"
 
 # Optional: AI APIs (Agar hai toh daal, nahi toh chhod de)
 OLLAMA_URL = "http://localhost:11434/api/generate"
-CLAUDE_API_KEY = ""  # Agar hai toh daal
+CLAUDE_API_KEY = "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"  # Agar hai toh daal
 GROQ_API_KEY = ""  # Agar hai toh daal
 
 # ============================================
